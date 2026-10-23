@@ -100,7 +100,7 @@ shown = [a for a in alerts if a["score"] >= LEVELS[min_level]]
 hours, shares, ids, window, window_share = demand_view(df)
 prices = series_change(df, "CPI: ")
 labor = series_change(df, "Employees: ")
-acts = build_actions(alerts, window, window_share, ids, prices, labor)
+acts = build_actions(alerts, window, window_share, ids, prices, labor, shares)
 n_high = sum(a["level"] == "High" for a in alerts)
 mood = "heating up" if n_high >= 3 else "active" if n_high else "steady"
 headline = (f"Market is {mood}: {n_high} high-threat competitor moves in the last {days} days; demand peaks "
@@ -128,6 +128,9 @@ with t1:
             c1, c2 = st.columns([5, 2])
             c1.markdown(f"**{a['p']} · {md(a['do'])}**  \n{md(a['why'])}")
             c2.markdown(f"**Owner:** {a['owner']}  \n**Measure:** {md(a['kpi'])}  \n**When:** {a['when']}")
+            with st.expander("How this was calculated"):
+                for line in a["math"]:
+                    st.markdown("• " + md(line))
             st.markdown(f"<span class='src'>Sources: {' · '.join(a['ids'])}</span>", unsafe_allow_html=True)
     st.download_button("⬇️ Download this brief (HTML, opens in any browser)",
                        brief_html(headline, acts, shown, stats,
@@ -163,11 +166,24 @@ with t3:
                                                          range=["#0a6b3d", "#b9cfc2"]), legend=alt.Legend(title=None)),
         tooltip=["Hour", alt.Tooltip("Expected orders:Q", format=".0f")]).properties(height=280),
         use_container_width=True)
-    peak = plan.loc[plan["Pickers needed"].idxmax()]
+    peak = plan.loc[plan["Expected orders"].idxmax()]
     c1, c2, c3 = st.columns(3)
-    c1.metric("Busiest hour", peak["Hour"], f"{peak['Expected orders']} orders", delta_color="off")
+    c1.metric(f"Busiest hour ({peak['Expected orders']} orders)", peak["Hour"])
     c2.metric("Pickers at the busiest hour", int(peak["Pickers needed"]))
     c3.metric("Riders at the busiest hour", int(peak["Riders needed"]))
+    p_orders = daily_orders * shares.get(int(peak["Hour"][:2]), 0) / 100
+    with st.expander(f"How the {peak['Hour']} numbers were calculated, and what could make them wrong", expanded=True):
+        st.markdown(
+            f"1. **Expected orders:** {daily_orders:,} orders a day × {shares.get(int(peak['Hour'][:2]), 0):.2f}% "
+            f"(share of real Instacart orders placed at {peak['Hour']}) = **{p_orders:.1f} orders**, rounded to "
+            f"{peak['Expected orders']}.  \n"
+            f"2. **Riders:** {p_orders:.1f} orders ÷ {drops} deliveries per rider per hour = {p_orders / drops:.1f}, "
+            f"rounded **up** to **{int(peak['Riders needed'])} riders** (you can't send part of a rider).  \n"
+            f"3. **Pickers:** {p_orders:.1f} ÷ {picks} orders packed per picker per hour = {p_orders / picks:.1f}, "
+            f"rounded up to **{int(peak['Pickers needed'])} pickers**.  \n\n"
+            "**What could make this wrong:** the hourly pattern is the US Instacart average, not your store; "
+            "weather, promotions and holidays are not included; the rider figure assumes short trips. "
+            "Change the assumptions on the left to match your store and the numbers update.")
     st.dataframe(plan, hide_index=True, use_container_width=True, height=300)
 with t4:
     st.subheader("Cost pressure: grocery prices and the labor we compete for")
