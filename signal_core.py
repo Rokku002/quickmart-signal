@@ -167,25 +167,38 @@ def series_change(df, category_prefix):
         first, last = g.iloc[0], g.iloc[-1]
         pct = (last["value"] / first["value"] - 1) * 100
         out.append({"name": name.split(": ", 1)[-1], "pct": pct, "from": first["date_parsed"], "to": last["date_parsed"],
-                    "ids": [first["record_id"], last["record_id"]], "unit": last["unit"]})
+                    "ids": [first["record_id"], last["record_id"]], "unit": last["unit"],
+                    "v_from": first["value"], "v_to": last["value"], "months": len(g),
+                    # months missing from the latest-12 window: blanks kept in the data, or months rejected upstream
+                    "skipped": max(int(df[(df["subcategory"] == name) & df["value"].isna()].shape[0]), 12 - len(g))})
     return sorted(out, key=lambda r: -r["pct"])
 
 
-def build_actions(alerts, window, window_share, ids, prices, labor):
+def build_actions(alerts, window, window_share, ids, prices, labor, shares=None):
+    shares = shares if shares is not None else {}
     acts = []
     acts.append({"p": "P1", "owner": "Operations",
                  "do": f"Put most pickers and riders on shift from {window[0]:02d}:00 to {(window[-1] + 1) % 24:02d}:00.",
                  "why": f"{window_share:.1f}% of all orders arrive in these four hours, so this is where the "
                         "10-minute promise is most at risk.",
                  "kpi": "Share of orders delivered in 10 minutes or less during these hours", "when": "This week",
-                 "ids": [ids[h] for h in window]})
+                 "ids": [ids[h] for h in window],
+                 "math": ["Each hour's share of orders comes from 10,428 real Instacart orders (600 customers): "
+                          + ", ".join(f"{h:02d}:00 = {shares.get(h, 0):.1f}%" for h in window) + ".",
+                          f"Added together: {window_share:.1f}%. The tool checks every 4-hour block in the day "
+                          "and picks the one with the highest total.",
+                          "Assumption: your store's customers order at similar times to Instacart's. "
+                          "If your own order history shows a different peak, trust your data."]})
     top = [a for a in alerts if a["level"] == "High"][:1] or alerts[:1]
     if top:
         a = top[0]
         who = ", ".join(a["competitors"]) or "A competitor"
         acts.append({"p": "P1", "owner": "Strategy", "do": f"Brief leadership on: {a['title']}",
                      "why": f"{who}: {a['so_what']}", "kpi": "Decision recorded in Monday's leadership meeting",
-                     "when": "Monday", "ids": [a["id"]]})
+                     "when": "Monday", "ids": [a["id"]],
+                     "math": [f"Threat level {a['score']}/5 = {a['why']}.",
+                              "This is the highest-scoring news item in your chosen window (newest first if tied). "
+                              "Open the article link in the Competitor alerts tab to read it before you brief."]})
     food = next((p for p in prices if p["name"].lower() == "food at home"), None)
     if food:
         up = food["pct"] > 0
@@ -195,7 +208,14 @@ def build_actions(alerts, window, window_share, ids, prices, labor):
                      "why": f"Grocery prices (food at home) moved {food['pct']:+.1f}% between "
                             f"{food['from']:%b %Y} and {food['to']:%b %Y}.",
                      "kpi": "Basket size and repeat rate of price-sensitive customers", "when": "30 days",
-                     "ids": food["ids"]})
+                     "ids": food["ids"],
+                     "math": [f"US Bureau of Labor Statistics price index for food bought in stores: "
+                              f"{food['v_from']:.1f} in {food['from']:%b %Y} → {food['v_to']:.1f} in {food['to']:%b %Y}.",
+                              f"({food['v_to']:.1f} ÷ {food['v_from']:.1f} − 1) × 100 = {food['pct']:+.1f}%.",
+                              (f"Missing data: only {12 - food['skipped']} of the latest 12 months were published by BLS "
+                               "(October 2025 was never released because of the 2025 government shutdown), so the "
+                               "comparison starts at the first published month. No value is guessed." if food["skipped"] else
+                               "No missing months in this series.")]})
     courier = next((l for l in labor if "courier" in l["name"].lower()), None)
     if courier:
         acts.append({"p": "P3", "owner": "Operations",
@@ -204,7 +224,11 @@ def build_actions(alerts, window, window_share, ids, prices, labor):
                             "Courier jobs are shrinking: hire holiday riders early while supply is available."),
                      "why": f"US courier jobs changed {courier['pct']:+.1f}% between {courier['from']:%b %Y} "
                             f"and {courier['to']:%b %Y}.",
-                     "kpi": "Open rider shifts filled", "when": "60 days", "ids": courier["ids"]})
+                     "kpi": "Open rider shifts filled", "when": "60 days", "ids": courier["ids"],
+                     "math": [f"US Bureau of Labor Statistics count of people employed by couriers and messengers: "
+                              f"{courier['v_from']:,.1f}k in {courier['from']:%b %Y} → {courier['v_to']:,.1f}k in "
+                              f"{courier['to']:%b %Y} ({courier['pct']:+.1f}%).",
+                              "This is a national number. Local rider supply in your city can move differently."]})
     return acts
 
 
